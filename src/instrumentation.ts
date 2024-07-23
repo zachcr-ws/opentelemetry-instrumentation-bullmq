@@ -423,10 +423,10 @@ export class Instrumentation extends InstrumentationBase {
       return;
     }
 
-    const logs = [`traceId=${traceId}`, `kind=${kind}`];
+    const logs = [`traceId=${traceId}`, `kind=${SpanKind[kind]}`];
     if (attributes.hasOwnProperty(BullMQAttributes.JOB_NAME) ||
       attributes.hasOwnProperty(BullMQAttributes.QUEUE_NAME)) {
-      logs.push(`action=${attributes[BullMQAttributes.JOB_NAME] || attributes[BullMQAttributes.QUEUE_NAME]}`)
+      logs.push(`method=${attributes[BullMQAttributes.JOB_NAME] || attributes[BullMQAttributes.QUEUE_NAME]}`)
     }
     if (attributes.hasOwnProperty(BullMQAttributes.DATA)) {
       logs.push(`data=${attributes[BullMQAttributes.DATA]}`)
