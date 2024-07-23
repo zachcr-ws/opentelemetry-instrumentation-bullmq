@@ -5,6 +5,8 @@ const worker = `${ns}.worker`
 
 export const BullMQAttributes = {
   MESSAGING_SYSTEM: 'BullMQ',
+  TRACE_ID: 'traceId',
+  DATA: 'data',
   JOB_ATTEMPTS: `${job}.attempts`,
   JOB_DELAY: `${job}.delay`,
   JOB_FAILED_REASON: `${job}.failedReason`,

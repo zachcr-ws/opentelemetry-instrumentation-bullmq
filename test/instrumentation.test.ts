@@ -16,7 +16,7 @@ import {
 } from '@opentelemetry/sdk-trace-base';
 import type * as bullmq from 'bullmq';
 
-import {BullMQInstrumentation} from '../src'
+import { BullMQInstrumentation } from '../src'
 
 // rewiremock.disable();
 
@@ -39,7 +39,7 @@ function getWait(): [Promise<any>, Function, Function] {
 
 describe('bullmq', () => {
   const instrumentation = new BullMQInstrumentation();
-  const connection = {host: 'localhost'};
+  const connection = { host: 'localhost' };
   const provider = new NodeTracerProvider();
   const memoryExporter = new InMemorySpanExporter();
   const spanProcessor = new SimpleSpanProcessor(memoryExporter);
@@ -70,16 +70,16 @@ describe('bullmq', () => {
   describe('Queue', () => {
     it('should not generate any spans when disabled', async () => {
       instrumentation.disable();
-      const q = new Queue('disabled', {connection});
-      await q.add('testJob', {test: 'yes'});
+      const q = new Queue('disabled', { connection });
+      await q.add('testJob', { test: 'yes' });
 
       const spans = memoryExporter.getFinishedSpans();
       assert.strictEqual(spans.length, 0);
     });
 
     it('should create a span for add', async () => {
-      const q = new Queue('queue', {connection});
-      await q.add('testJob', {test: 'yes'});
+      const q = new Queue('queue', { connection });
+      await q.add('testJob', { test: 'yes' });
 
       const span = memoryExporter.getFinishedSpans()
         .find(span => span.name.includes('Queue.add'));
@@ -87,8 +87,8 @@ describe('bullmq', () => {
     });
 
     it('should create a span for addBulk', async () => {
-      const q = new Queue('queue', {connection});
-      await q.addBulk([{name: 'testJob', data: {test: 'yes'}}])
+      const q = new Queue('queue', { connection });
+      await q.addBulk([{ name: 'testJob', data: { test: 'yes' } }])
 
       const span = memoryExporter.getFinishedSpans()
         .find(span => span.name.includes('Queue.addBulk'));
@@ -100,7 +100,7 @@ describe('bullmq', () => {
     it('should not generate any spans when disabled', async () => {
       instrumentation.disable();
       const q = new FlowProducer();
-      await q.add({name: 'testJob', queueName: 'disabled'});
+      await q.add({ name: 'testJob', queueName: 'disabled' });
 
       const spans = memoryExporter.getFinishedSpans();
       assert.strictEqual(spans.length, 0);
@@ -108,7 +108,7 @@ describe('bullmq', () => {
 
     it('should create a span for add', async () => {
       const q = new FlowProducer();
-      await q.add({name: 'testJob', queueName: 'flow'});
+      await q.add({ name: 'testJob', queueName: 'flow' });
 
       const span = memoryExporter.getFinishedSpans()
         .find(span => span.name.includes('FlowProducer.add'));
@@ -117,7 +117,7 @@ describe('bullmq', () => {
 
     it('should create a span for addBulk', async () => {
       const q = new FlowProducer();
-      await q.addBulk([{name: 'testJob', queueName: 'flow'}]);
+      await q.addBulk([{ name: 'testJob', queueName: 'flow' }]);
 
       const span = memoryExporter.getFinishedSpans()
         .find(span => span.name.includes('FlowProducer.addBulk'));
@@ -128,11 +128,11 @@ describe('bullmq', () => {
   describe('Worker', () => {
     it('should not generate any spans when disabled', async () => {
       instrumentation.disable();
-      const w = new Worker('disabled', async () => undefined, {connection})
+      const w = new Worker('disabled', async () => undefined, { connection })
       await w.waitUntilReady();
 
-      const q = new Queue('disabled', {connection});
-      await q.add('testJob', {test: 'yes'});
+      const q = new Queue('disabled', { connection });
+      await q.add('testJob', { test: 'yes' });
 
       const spans = memoryExporter.getFinishedSpans();
       assert.strictEqual(spans.length, 0);
@@ -142,12 +142,12 @@ describe('bullmq', () => {
       const [processor, processorDone] = getWait();
 
       const w = new Worker('worker', async () => {
-        processorDone(); return {completed: new Date().toTimeString()}
-      }, {connection})
+        processorDone(); return { completed: new Date().toTimeString() }
+      }, { connection })
       await w.waitUntilReady();
 
-      const q = new Queue('worker', {connection});
-      await q.add('testJob', {test: 'yes'});
+      const q = new Queue('worker', { connection });
+      await q.add('testJob', { test: 'yes' });
 
       await processor;
       await w.close();
@@ -160,13 +160,13 @@ describe('bullmq', () => {
     it('should propagate from the producer', async () => {
       const [processor, processorDone] = getWait();
 
-      const q = new Queue('worker', {connection});
+      const q = new Queue('worker', { connection });
       const w = new Worker('worker', async () => {
-        processorDone(); return {completed: new Date().toTimeString()}
-      }, {connection})
+        processorDone(); return { completed: new Date().toTimeString() }
+      }, { connection })
       await w.waitUntilReady();
 
-      await q.add('testJob', {started: new Date().toTimeString()});
+      await q.add('testJob', { started: new Date().toTimeString() });
 
       await processor;
       await w.close();
@@ -182,15 +182,15 @@ describe('bullmq', () => {
     it('should capture events from the processor', async () => {
       const [processor, processorDone] = getWait();
 
-      const q = new Queue('worker', {connection});
+      const q = new Queue('worker', { connection });
       const w = new Worker('worker', async (job, token) => {
         await job.extendLock(token as string, 20);
         processorDone();
-        return {completed: new Date().toTimeString()}
-      }, {connection})
+        return { completed: new Date().toTimeString() }
+      }, { connection })
       await w.waitUntilReady();
 
-      await q.add('testJob', {started: new Date().toTimeString()});
+      await q.add('testJob', { started: new Date().toTimeString() });
 
       await processor;
       await w.close();
@@ -204,14 +204,14 @@ describe('bullmq', () => {
     it('should capture errors from the processor', async () => {
       const [processor, processorDone] = getWait();
 
-      const q = new Queue('worker', {connection});
+      const q = new Queue('worker', { connection });
       const w = new Worker('worker', async () => {
         processorDone();
         throw new Error('forced error');
-      }, {connection})
+      }, { connection })
       await w.waitUntilReady();
 
-      await q.add('testJob', {started: new Date().toTimeString()});
+      await q.add('testJob', { started: new Date().toTimeString() });
 
       await processor;
       await w.close();

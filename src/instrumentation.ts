@@ -3,9 +3,9 @@ import {
   InstrumentationConfig,
   InstrumentationNodeModuleDefinition,
 } from '@opentelemetry/instrumentation';
-import {SemanticAttributes} from '@opentelemetry/semantic-conventions';
-import type {Attributes, Span} from '@opentelemetry/api'
-import {context, propagation, SpanKind, SpanStatusCode, trace} from '@opentelemetry/api';
+import { SemanticAttributes } from '@opentelemetry/semantic-conventions';
+import type { Attributes, DiagLogger, Span } from '@opentelemetry/api'
+import { context, propagation, SpanKind, SpanStatusCode, trace } from '@opentelemetry/api';
 import type * as bullmq from 'bullmq';
 import type {
   FlowJob,
@@ -18,16 +18,36 @@ import type {
   Queue,
   Worker,
 } from 'bullmq';
-import {flatten} from 'flat';
+import { flatten } from 'flat';
 
-import {VERSION} from './version';
-import {BullMQAttributes} from './attributes';
+import { VERSION } from './version';
+import { BullMQAttributes } from './attributes';
 
 declare type Fn = (...args: any[]) => any;
 
+export interface Logger {
+  log(message: any, ...optionalParams: any[]): any;
+  error(message: any, ...optionalParams: any[]): any;
+  warn(message: any, ...optionalParams: any[]): any;
+}
+
+export interface BullMQInstrumentationConfig extends InstrumentationConfig {
+  isConsole?: boolean;
+  isSetDataInAttribute?: boolean;
+  logger?: Logger
+}
+
 export class Instrumentation extends InstrumentationBase {
-  constructor(config: InstrumentationConfig = {}) {
-    super('opentelemetry-instrumentation-bullmq', VERSION, config);
+  private readonly isConsole?: boolean;
+  private readonly isSetDataInAttribute?: boolean;
+  private readonly logger?: Logger;
+  constructor(config: BullMQInstrumentationConfig = {}) {
+    super('@ws-opentelemetry-instrumentation-bullmq', VERSION, {
+      enabled: config.enabled
+    });
+    this.logger = config.logger;
+    this.isConsole = config.isConsole;
+    this.isSetDataInAttribute = config.isSetDataInAttribute;
   }
 
   /**
@@ -96,26 +116,37 @@ export class Instrumentation extends InstrumentationBase {
     const action = 'Job.addJob';
 
     return function addJob(original) {
-      return async function patch(this:Job, client: never, parentOpts?: ParentOpts): Promise<string> {
+      return async function patch(this: Job, client: never, parentOpts?: ParentOpts): Promise<string> {
         const spanName = `${this.queueName}.${this.name} ${action}`;
         // this.opts = this.opts ?? {};
+        const attributes = {
+          [SemanticAttributes.MESSAGING_SYSTEM]: BullMQAttributes.MESSAGING_SYSTEM,
+          [SemanticAttributes.MESSAGING_DESTINATION]: this.queueName,
+          [BullMQAttributes.JOB_NAME]: this.name,
+          [BullMQAttributes.DATA]: this.data,
+          ...Instrumentation.attrMap(BullMQAttributes.JOB_OPTS, this.opts),
+        }
+        if (instrumentation.isSetDataInAttribute) {
+          attributes[BullMQAttributes.DATA] = JSON.stringify(this.data)
+        }
         const span = tracer.startSpan(spanName, {
-          attributes: {
-            [SemanticAttributes.MESSAGING_SYSTEM]: BullMQAttributes.MESSAGING_SYSTEM,
-            [SemanticAttributes.MESSAGING_DESTINATION]: this.queueName,
-            [BullMQAttributes.JOB_NAME]: this.name,
-            ...Instrumentation.attrMap(BullMQAttributes.JOB_OPTS, this.opts),
-          },
+          attributes,
           kind: SpanKind.PRODUCER
         });
+        const traceId = span.spanContext().traceId
         if (parentOpts) {
           span.setAttributes({
             [BullMQAttributes.JOB_PARENT_KEY]: parentOpts.parentKey ?? 'unknown',
             [BullMQAttributes.JOB_WAIT_CHILDREN_KEY]: parentOpts.waitChildrenKey ?? 'unknown',
+            [BullMQAttributes.TRACE_ID]: traceId,
           });
         }
         const parentContext = context.active();
         const messageContext = trace.setSpan(parentContext, span);
+
+        if (instrumentation.isConsole) {
+          instrumentation.log(traceId, SpanKind.PRODUCER, attributes)
+        }
 
         propagation.inject(messageContext, this.opts);
         return await context.with(messageContext, async () => {
@@ -141,17 +172,22 @@ export class Instrumentation extends InstrumentationBase {
     return function add(original) {
       return async function patch(this: Queue, ...args: any): Promise<Job> {
         const [name, data, opts = {}] = [...args];
-
+        const attributes = {
+          [SemanticAttributes.MESSAGING_SYSTEM]: BullMQAttributes.MESSAGING_SYSTEM,
+          [SemanticAttributes.MESSAGING_DESTINATION]: this.name,
+          [BullMQAttributes.JOB_NAME]: name,
+          [BullMQAttributes.JOB_PRIORITY]: opts.priority || 0,
+        }
+        if (instrumentation.isSetDataInAttribute) {
+          attributes[BullMQAttributes.DATA] = JSON.stringify(data)
+        }
         const spanName = `${this.name}.${name} ${action}`;
         const span = tracer.startSpan(spanName, {
-          attributes: {
-            [SemanticAttributes.MESSAGING_SYSTEM]: BullMQAttributes.MESSAGING_SYSTEM,
-            [SemanticAttributes.MESSAGING_DESTINATION]: this.name,
-            [BullMQAttributes.JOB_NAME]: name,
-            [BullMQAttributes.JOB_PRIORITY]: opts.priority || 0,
-          },
+          attributes,
           kind: SpanKind.INTERNAL
         });
+        const traceId = span.spanContext().traceId;
+        span.setAttribute(BullMQAttributes.TRACE_ID, traceId)
 
         return Instrumentation.withContext(this, original, span, args);
       };
@@ -166,17 +202,23 @@ export class Instrumentation extends InstrumentationBase {
     return function addBulk(original) {
       return async function patch(this: bullmq.Queue, ...args: bullmq.Job[]): Promise<bullmq.Job[]> {
         const names = args.map(job => job.name);
-
+        const datas = args.map(job => job.data)
+        const attributes = {
+          [SemanticAttributes.MESSAGING_SYSTEM]: BullMQAttributes.MESSAGING_SYSTEM,
+          [SemanticAttributes.MESSAGING_DESTINATION]: this.name,
+          [BullMQAttributes.JOB_BULK_NAMES]: names,
+          [BullMQAttributes.JOB_BULK_COUNT]: names.length,
+        }
+        if (instrumentation.isSetDataInAttribute) {
+          attributes[BullMQAttributes.DATA] = JSON.stringify(datas)
+        }
         const spanName = `${this.name} ${action}`;
         const span = tracer.startSpan(spanName, {
-          attributes: {
-            [SemanticAttributes.MESSAGING_SYSTEM]: BullMQAttributes.MESSAGING_SYSTEM,
-            [SemanticAttributes.MESSAGING_DESTINATION]: this.name,
-            [BullMQAttributes.JOB_BULK_NAMES]: names,
-            [BullMQAttributes.JOB_BULK_COUNT]: names.length,
-          },
+          attributes,
           kind: SpanKind.INTERNAL
         });
+        const traceId = span.spanContext().traceId;
+        span.setAttribute(BullMQAttributes.TRACE_ID, traceId)
 
         return Instrumentation.withContext(this, original, span, args);
       };
@@ -199,6 +241,8 @@ export class Instrumentation extends InstrumentationBase {
           },
           kind: SpanKind.INTERNAL
         });
+        const traceId = span.spanContext().traceId;
+        span.setAttribute(BullMQAttributes.TRACE_ID, traceId)
 
         return Instrumentation.withContext(this, original, span, [flow, opts])
       };
@@ -219,6 +263,8 @@ export class Instrumentation extends InstrumentationBase {
           },
           kind: SpanKind.INTERNAL
         });
+        const traceId = span.spanContext().traceId;
+        span.setAttribute(BullMQAttributes.TRACE_ID, traceId)
 
         return Instrumentation.withContext(this, original, span, args);
       };
@@ -230,30 +276,42 @@ export class Instrumentation extends InstrumentationBase {
     const tracer = instrumentation.tracer;
 
     return function patch(original) {
-      return async function callProcessJob(this: Worker, job: any, ...rest: any[]){
+      return async function callProcessJob(this: Worker, job: any, ...rest: any[]) {
         const workerName = this.name ?? 'anonymous';
         const currentContext = context.active();
         const parentContext = propagation.extract(currentContext, job.opts);
 
+        const attributes = {
+          [SemanticAttributes.MESSAGING_SYSTEM]: BullMQAttributes.MESSAGING_SYSTEM,
+          [SemanticAttributes.MESSAGING_CONSUMER_ID]: workerName,
+          [SemanticAttributes.MESSAGING_MESSAGE_ID]: job.id ?? 'unknown',
+          [SemanticAttributes.MESSAGING_OPERATION]: 'receive',
+          [BullMQAttributes.JOB_NAME]: job.name,
+          [BullMQAttributes.JOB_ATTEMPTS]: job.attemptsMade,
+          [BullMQAttributes.JOB_TIMESTAMP]: job.timestamp,
+          [BullMQAttributes.JOB_PRIORITY]: job.priority,
+          [BullMQAttributes.JOB_DELAY]: job.delay,
+          ...Instrumentation.attrMap(BullMQAttributes.JOB_OPTS, job.opts),
+          [BullMQAttributes.QUEUE_NAME]: job.queueName,
+          [BullMQAttributes.WORKER_NAME]: workerName,
+        }
+        if (instrumentation.isSetDataInAttribute) {
+          attributes[BullMQAttributes.DATA] = JSON.stringify(job.data)
+        }
         const spanName = `${job.queueName}.${job.name} Worker.${workerName} #${job.attemptsMade}`;
         const span = tracer.startSpan(spanName, {
-          attributes: {
-            [SemanticAttributes.MESSAGING_SYSTEM]: BullMQAttributes.MESSAGING_SYSTEM,
-            [SemanticAttributes.MESSAGING_CONSUMER_ID]: workerName,
-            [SemanticAttributes.MESSAGING_MESSAGE_ID]: job.id ?? 'unknown',
-            [SemanticAttributes.MESSAGING_OPERATION]: 'receive',
-            [BullMQAttributes.JOB_NAME]: job.name,
-            [BullMQAttributes.JOB_ATTEMPTS]: job.attemptsMade,
-            [BullMQAttributes.JOB_TIMESTAMP]: job.timestamp,
-            [BullMQAttributes.JOB_PRIORITY]: job.priority,
-            [BullMQAttributes.JOB_DELAY]: job.delay,
-            ...Instrumentation.attrMap(BullMQAttributes.JOB_OPTS, job.opts),
-            [BullMQAttributes.QUEUE_NAME]: job.queueName,
-            [BullMQAttributes.WORKER_NAME]: workerName,
-          },
+          attributes,
           kind: SpanKind.CONSUMER
         }, parentContext);
         if (job.repeatJobKey) span.setAttribute(BullMQAttributes.JOB_REPEAT_KEY, job.repeatJobKey);
+
+        const traceId = span.spanContext().traceId;
+        span.setAttribute(BullMQAttributes.TRACE_ID, traceId)
+
+        if (instrumentation.isConsole) {
+          instrumentation.log(traceId, SpanKind.CONSUMER, attributes)
+        }
+
         const messageContext = trace.setSpan(parentContext, span);
 
         return await context.with(messageContext, async () => {
@@ -296,6 +354,8 @@ export class Instrumentation extends InstrumentationBase {
           },
           kind: SpanKind.INTERNAL
         });
+        const traceId = span.spanContext().traceId;
+        span.setAttribute(BullMQAttributes.TRACE_ID, traceId)
 
         return Instrumentation.withContext(this, original, span, args);
       };
@@ -312,6 +372,8 @@ export class Instrumentation extends InstrumentationBase {
           [BullMQAttributes.JOB_PROCESSED_TIMESTAMP]: this.processedOn ?? 'unknown',
           [BullMQAttributes.JOB_ATTEMPTS]: this.attemptsMade
         });
+        const traceId = span?.spanContext().traceId || '';
+        span?.setAttribute(BullMQAttributes.TRACE_ID, traceId)
 
         return original.apply(this, args);
       };
@@ -328,6 +390,8 @@ export class Instrumentation extends InstrumentationBase {
           [BullMQAttributes.JOB_PROCESSED_TIMESTAMP]: this.processedOn ?? 'unknown',
           [BullMQAttributes.JOB_ATTEMPTS]: this.attemptsMade
         });
+        const traceId = span?.spanContext().traceId || '';
+        span?.setAttribute(BullMQAttributes.TRACE_ID, traceId)
 
         return original.apply(this, args);
       };
@@ -344,6 +408,8 @@ export class Instrumentation extends InstrumentationBase {
           [BullMQAttributes.JOB_PROCESSED_TIMESTAMP]: this.processedOn ?? 'unknown',
           [BullMQAttributes.JOB_ATTEMPTS]: this.attemptsMade
         });
+        const traceId = span?.spanContext().traceId || '';
+        span?.setAttribute(BullMQAttributes.TRACE_ID, traceId)
 
         return original.apply(this, args);
       };
@@ -351,6 +417,27 @@ export class Instrumentation extends InstrumentationBase {
   }
 
 
+  private log(traceId: string, kind: SpanKind, attributes: Attributes, err?: Error) {
+    if (![SpanKind.CONSUMER, SpanKind.PRODUCER].includes(kind)) {
+      // Ignore internal span
+      return;
+    }
+
+    const logs = [`traceId=${traceId}`, `kind=${kind}`];
+    if (attributes.hasOwnProperty(BullMQAttributes.JOB_NAME) ||
+      attributes.hasOwnProperty(BullMQAttributes.QUEUE_NAME)) {
+      logs.push(`action=${attributes[BullMQAttributes.JOB_NAME] || attributes[BullMQAttributes.QUEUE_NAME]}`)
+    }
+    if (attributes.hasOwnProperty(BullMQAttributes.DATA)) {
+      logs.push(`data=${attributes[BullMQAttributes.DATA]}`)
+    }
+
+    if (!err) {
+      this.logger?.log(logs.join(' '));
+    } else {
+      this.logger?.error(logs.join(' '));
+    }
+  }
 
   private static setError = (span: Span, error: Error) => {
     span.recordException(error);
@@ -359,7 +446,7 @@ export class Instrumentation extends InstrumentationBase {
   }
 
   private static attrMap(prefix: string, opts: JobsOptions): Attributes {
-    const attrs = flatten({[prefix]: opts}) as Attributes;
+    const attrs = flatten({ [prefix]: opts }) as Attributes;
     for (const key in attrs) {
       if (attrs[key] === undefined) delete attrs[key];
     }
